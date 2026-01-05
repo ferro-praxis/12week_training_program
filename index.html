@@ -158,24 +158,39 @@
         }, 10000);
     </script>
     
-    <!-- Load program data -->
+       <!-- Load program data -->
     <script src="js/program-data.js"></script>
+    
+    <!-- Verify PROGRAMS loaded -->
+    <script>
+        if (typeof PROGRAMS === 'undefined') {
+            console.error('CRITICAL: program-data.js did not load!');
+            document.getElementById('loading').innerHTML = 
+                '<h1 style="color: white;">⚠️ Loading Error</h1>' +
+                '<p style="color: white;">Program data failed to load.</p>' +
+                '<p style="color: white;">Please refresh the page.</p>' +
+                '<button onclick="location.reload()" style="margin-top: 20px; padding: 10px 20px; background: white; color: #DC2626; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">Refresh</button>';
+        } else {
+            console.log('✓ PROGRAMS loaded successfully');
+        }
+    </script>
     
     <!-- Load main app -->
     <script src="js/app.js"></script>
     
     <!-- Hide loading screen when app mounts -->
     <script>
-        // Hide loading screen after Vue mounts
         setTimeout(function() {
             var loading = document.getElementById('loading');
             var app = document.getElementById('app');
             if (app && app.innerHTML.trim() !== '') {
-                loading.style.opacity = '0';
-                loading.style.transition = 'opacity 0.3s';
-                setTimeout(function() {
-                    loading.style.display = 'none';
-                }, 300);
+                if (loading) {
+                    loading.style.opacity = '0';
+                    loading.style.transition = 'opacity 0.3s';
+                    setTimeout(function() {
+                        loading.style.display = 'none';
+                    }, 300);
+                }
             }
         }, 1000);
     </script>
