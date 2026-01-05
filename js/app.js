@@ -1,30 +1,48 @@
+// UPDATED APP.JS - COPY THIS ENTIRE FILE TO REPLACE YOUR CURRENT app.js
+// Changes: 
+// 1. Fixed date calculation (Oregon timezone)
+// 2. Added weight tracking per set for dumbbell workouts
+// 3. Added previous weight display
+// 4. Dual program progress tracking
+// 5. Ability to switch programs without losing data
+
 const { createApp } = Vue;
 
 createApp({
   data() {
     return {
       // App state
-      currentView: 'onboarding', // onboarding, dashboard, workout, schedule, settings
+      currentView: 'onboarding',
       darkMode: false,
       
-      // User profile
-      userProfile: {
-        programType: null, // 'bodyweight' or 'dumbbell'
-        bodyWeight: null,
-        bodyFatPercent: null,
+      // UPDATED: Separate profiles for each program
+      bodyweightProfile: {
         startDate: null,
         currentWeek: 1,
         currentDay: 0,
-        completedWorkouts: [], // Array of {date, week, workout, exercises: [{name, sets: [{reps}]}]}
-        cardioLog: [], // Array of {date, completed}
+        completedWorkouts: [],
+        cardioLog: [],
         totalTimeTrainedMinutes: 0
       },
+      
+      dumbbellProfile: {
+        startDate: null,
+        currentWeek: 1,
+        currentDay: 0,
+        completedWorkouts: [],
+        cardioLog: [],
+        totalTimeTrainedMinutes: 0
+      },
+      
+      // Current active program
+      activeProgramType: null, // 'bodyweight' or 'dumbbell'
       
       // Workout session state
       activeWorkout: null,
       currentExerciseIndex: 0,
       currentSet: 1,
       completedSets: [],
+      currentSetWeight: '', // NEW: Weight for current set
       workoutStartTime: null,
       isResting: false,
       restTimeRemaining: 0,
@@ -36,23 +54,34 @@ createApp({
       
       // UI state
       showWorkoutSummary: false,
-      workoutSummaryData: null
+      workoutSummaryData: null,
+      showProgramSwitcher: false
     };
   },
   
   computed: {
+    // Get current active profile
+    currentProfile() {
+      return this.activeProgramType === 'bodyweight' ? this.bodyweightProfile : this.dumbbellProfile;
+    },
+    
+    // Get the other profile
+    inactiveProfile() {
+      return this.activeProgramType === 'bodyweight' ? this.dumbbellProfile : this.bodyweightProfile;
+    },
+    
     programData() {
-      return this.userProfile.programType ? PROGRAMS[this.userProfile.programType] : null;
+      return this.activeProgramType ? PROGRAMS[this.activeProgramType] : null;
     },
     
     todayWorkout() {
-      if (!this.userProfile.startDate || !this.userProfile.programType) return null;
+      if (!this.currentProfile.startDate || !this.activeProgramType) return null;
       
-      const { week, dayOfWeek } = calculateCurrentWeekAndDay(this.userProfile.startDate);
-      this.userProfile.currentWeek = week;
-      this.userProfile.currentDay = dayOfWeek;
+      const { week, dayOfWeek } = this.calculateCurrentWeekAndDay(this.currentProfile.startDate);
+      this.currentProfile.currentWeek = week;
+      this.currentProfile.currentDay = dayOfWeek;
       
-      return getWorkoutForDay(this.userProfile.programType, week, dayOfWeek);
+      return getWorkoutForDay(this.activeProgramType, week, dayOfWeek);
     },
     
     currentExercise() {
@@ -60,39 +89,54 @@ createApp({
       return this.activeWorkout.exercises[this.currentExerciseIndex];
     },
     
+    // NEW: Get previous weight for current exercise
+    previousWeight() {
+      if (!this.currentExercise || this.activeProgramType !== 'dumbbell') return null;
+      
+      // Find most recent workout with this exercise
+      const previousWorkouts = [...this.currentProfile.completedWorkouts]
+        .reverse()
+        .find(w => w.exercises && w.exercises.some(e => e.name === this.currentExercise.name));
+      
+      if (!previousWorkouts) return null;
+      
+      const prevExercise = previousWorkouts.exercises.find(e => e.name === this.currentExercise.name);
+      return prevExercise?.sets || null;
+    },
+    
     progressPercentage() {
       if (!this.programData) return 0;
-      return Math.round((this.userProfile.completedWorkouts.length / this.programData.totalWorkouts) * 100);
+      return Math.round((this.currentProfile.completedWorkouts.length / this.programData.totalWorkouts) * 100);
     },
     
     workoutsThisWeek() {
-      if (!this.userProfile.completedWorkouts.length) return 0;
+      if (!this.currentProfile.completedWorkouts.length) return 0;
       
-      const today = new Date();
+      const today = this.getLocalDate();
       const startOfWeek = new Date(today);
       startOfWeek.setDate(today.getDate() - today.getDay());
       startOfWeek.setHours(0, 0, 0, 0);
       
-      return this.userProfile.completedWorkouts.filter(w => {
-        const workoutDate = new Date(w.date);
+      return this.currentProfile.completedWorkouts.filter(w => {
+        const workoutDate = new Date(w.date + 'T00:00:00');
         return workoutDate >= startOfWeek;
       }).length;
     },
     
     streak() {
-      if (!this.userProfile.completedWorkouts.length && !this.userProfile.cardioLog.length) return 0;
+      if (!this.currentProfile.completedWorkouts.length && !this.currentProfile.cardioLog.length) return 0;
       
       const allActivities = [
-        ...this.userProfile.completedWorkouts.map(w => w.date),
-        ...this.userProfile.cardioLog.filter(c => c.completed).map(c => c.date)
-      ].sort((a, b) => new Date(b) - new Date(a));
+        ...this.currentProfile.completedWorkouts.map(w => w.date),
+        ...this.currentProfile.cardioLog.filter(c => c.completed).map(c => c.date)
+      ].sort((a, b) => new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00'));
       
       let streak = 0;
-      let checkDate = new Date();
+      let checkDate = this.getLocalDate();
       checkDate.setHours(0, 0, 0, 0);
       
       for (let activity of allActivities) {
-        const activityDate = new Date(activity);
+        const activityDate = new Date(activity + 'T00:00:00');
         activityDate.setHours(0, 0, 0, 0);
         
         const diffDays = Math.floor((checkDate - activityDate) / (1000 * 60 * 60 * 24));
@@ -109,26 +153,26 @@ createApp({
     },
     
     isWorkoutCompletedToday() {
-      const today = new Date().toISOString().split('T')[0];
-      return this.userProfile.completedWorkouts.some(w => w.date === today);
+      const today = this.getTodayDateString();
+      return this.currentProfile.completedWorkouts.some(w => w.date === today);
     },
     
     isCardioCompletedToday() {
-      const today = new Date().toISOString().split('T')[0];
-      return this.userProfile.cardioLog.some(c => c.date === today && c.completed);
+      const today = this.getTodayDateString();
+      return this.currentProfile.cardioLog.some(c => c.date === today && c.completed);
     },
     
     weekSchedule() {
-      if (!this.programData || !this.userProfile.startDate) return [];
+      if (!this.programData || !this.currentProfile.startDate) return [];
       
       const schedule = [];
-      const { week } = calculateCurrentWeekAndDay(this.userProfile.startDate);
+      const { week } = this.calculateCurrentWeekAndDay(this.currentProfile.startDate);
       
       for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
-        const workout = getWorkoutForDay(this.userProfile.programType, week, dayOfWeek);
+        const workout = getWorkoutForDay(this.activeProgramType, week, dayOfWeek);
         const date = this.getDateForDayOfWeek(dayOfWeek);
-        const isCompleted = this.userProfile.completedWorkouts.some(w => w.date === date);
-        const isToday = dayOfWeek === this.userProfile.currentDay;
+        const isCompleted = this.currentProfile.completedWorkouts.some(w => w.date === date);
+        const isToday = dayOfWeek === this.currentProfile.currentDay;
         
         schedule.push({
           dayOfWeek,
@@ -141,16 +185,80 @@ createApp({
       }
       
       return schedule;
+    },
+    
+    // NEW: Progress for inactive program
+    inactiveProgramProgress() {
+      if (!this.inactiveProfile.startDate) return null;
+      
+      const otherProgramType = this.activeProgramType === 'bodyweight' ? 'dumbbell' : 'bodyweight';
+      const otherProgramData = PROGRAMS[otherProgramType];
+      const percentage = Math.round((this.inactiveProfile.completedWorkouts.length / otherProgramData.totalWorkouts) * 100);
+      
+      return {
+        type: otherProgramType,
+        name: otherProgramData.name,
+        completed: this.inactiveProfile.completedWorkouts.length,
+        total: otherProgramData.totalWorkouts,
+        percentage: percentage
+      };
     }
   },
   
   methods: {
-    // Onboarding
+    // NEW: Fixed date calculation for Oregon timezone
+    getLocalDate() {
+      return new Date();
+    },
+    
+    getTodayDateString() {
+      const today = this.getLocalDate();
+      return today.toLocaleDateString('en-CA'); // YYYY-MM-DD format
+    },
+    
+    calculateCurrentWeekAndDay(startDate) {
+      const start = new Date(startDate + 'T00:00:00');
+      const today = this.getLocalDate();
+      today.setHours(0, 0, 0, 0);
+      start.setHours(0, 0, 0, 0);
+      
+      const diffTime = today - start;
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      const week = Math.floor(diffDays / 7) + 1;
+      const dayOfWeek = diffDays % 7;
+      
+      return {
+        week: Math.min(Math.max(week, 1), 12),
+        dayOfWeek: dayOfWeek < 0 ? 0 : dayOfWeek,
+        totalDays: diffDays + 1
+      };
+    },
+    
+    // Onboarding - SELECT program (doesn't reset other program)
     selectProgram(programType) {
-      this.userProfile.programType = programType;
-      this.userProfile.startDate = new Date().toISOString().split('T')[0];
-      this.saveUserProfile();
+      this.activeProgramType = programType;
+      
+      // Initialize this program if it's the first time
+      if (!this.currentProfile.startDate) {
+        this.currentProfile.startDate = this.getTodayDateString();
+      }
+      
+      this.saveData();
       this.currentView = 'dashboard';
+    },
+    
+    // NEW: Switch between programs
+    switchToProgram(programType) {
+      this.activeProgramType = programType;
+      
+      // Initialize if first time using this program
+      if (!this.currentProfile.startDate) {
+        this.currentProfile.startDate = this.getTodayDateString();
+      }
+      
+      this.saveData();
+      this.showProgramSwitcher = false;
     },
     
     // Navigation
@@ -166,11 +274,13 @@ createApp({
       this.currentExerciseIndex = 0;
       this.currentSet = 1;
       this.completedSets = [];
+      this.currentSetWeight = '';
       this.workoutStartTime = Date.now();
       this.workoutNotes = '';
       this.currentView = 'workout';
     },
     
+    // NEW: Complete set with weight tracking
     completeSet(reps) {
       if (!this.currentExercise) return;
       
@@ -180,6 +290,11 @@ createApp({
         reps: reps || this.currentExercise.reps,
         timestamp: Date.now()
       };
+      
+      // Add weight if dumbbell program
+      if (this.activeProgramType === 'dumbbell' && this.currentSetWeight) {
+        setData.weight = parseFloat(this.currentSetWeight);
+      }
       
       this.completedSets.push(setData);
       
@@ -192,6 +307,7 @@ createApp({
         if (this.currentExerciseIndex < this.activeWorkout.exercises.length - 1) {
           this.currentExerciseIndex++;
           this.currentSet = 1;
+          this.currentSetWeight = ''; // Reset weight for new exercise
         } else {
           // Workout complete
           this.finishWorkout();
@@ -207,6 +323,7 @@ createApp({
         if (this.currentExerciseIndex < this.activeWorkout.exercises.length - 1) {
           this.currentExerciseIndex++;
           this.currentSet = 1;
+          this.currentSetWeight = '';
         }
       }
     },
@@ -215,6 +332,7 @@ createApp({
       if (this.currentExerciseIndex > 0) {
         this.currentExerciseIndex--;
         this.currentSet = 1;
+        this.currentSetWeight = '';
         this.stopRestTimer();
       }
     },
@@ -223,6 +341,7 @@ createApp({
       if (this.currentExerciseIndex < this.activeWorkout.exercises.length - 1) {
         this.currentExerciseIndex++;
         this.currentSet = 1;
+        this.currentSetWeight = '';
         this.stopRestTimer();
       }
     },
@@ -264,24 +383,28 @@ createApp({
       const workoutDuration = Math.round((Date.now() - this.workoutStartTime) / 1000 / 60);
       
       const workoutRecord = {
-        date: new Date().toISOString().split('T')[0],
-        week: this.userProfile.currentWeek,
+        date: this.getTodayDateString(),
+        week: this.currentProfile.currentWeek,
         workout: this.activeWorkout.key,
         workoutName: this.activeWorkout.name,
         duration: workoutDuration,
+        programType: this.activeProgramType,
         exercises: this.activeWorkout.exercises.map((ex, idx) => ({
           name: ex.name,
           sets: this.completedSets
             .filter(s => s.exerciseIndex === idx)
-            .map(s => ({ reps: s.reps }))
+            .map(s => ({ 
+              reps: s.reps,
+              weight: s.weight || null // Include weight if present
+            }))
         })),
         notes: this.workoutNotes,
         timestamp: Date.now()
       };
       
-      this.userProfile.completedWorkouts.push(workoutRecord);
-      this.userProfile.totalTimeTrainedMinutes += workoutDuration;
-      this.saveUserProfile();
+      this.currentProfile.completedWorkouts.push(workoutRecord);
+      this.currentProfile.totalTimeTrainedMinutes += workoutDuration;
+      this.saveData();
       
       this.workoutSummaryData = {
         duration: workoutDuration,
@@ -309,22 +432,21 @@ createApp({
     
     // Cardio tracking
     toggleCardio() {
-      const today = new Date().toISOString().split('T')[0];
-      const existingIndex = this.userProfile.cardioLog.findIndex(c => c.date === today);
+      const today = this.getTodayDateString();
+      const existingIndex = this.currentProfile.cardioLog.findIndex(c => c.date === today);
       
       if (existingIndex >= 0) {
-        this.userProfile.cardioLog[existingIndex].completed = !this.userProfile.cardioLog[existingIndex].completed;
+        this.currentProfile.cardioLog[existingIndex].completed = !this.currentProfile.cardioLog[existingIndex].completed;
       } else {
-        this.userProfile.cardioLog.push({ date: today, completed: true });
+        this.currentProfile.cardioLog.push({ date: today, completed: true });
       }
       
-      this.saveUserProfile();
+      this.saveData();
     },
     
     // Audio & Haptics
     playTimerSound() {
-      if (!this.timerAudio) {
-        // Create a simple beep sound using Web Audio API
+      try {
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const oscillator = audioContext.createOscillator();
         const gainNode = audioContext.createGain();
@@ -340,6 +462,8 @@ createApp({
         
         oscillator.start(audioContext.currentTime);
         oscillator.stop(audioContext.currentTime + 0.5);
+      } catch (e) {
+        console.log('Audio not available');
       }
     },
     
@@ -357,35 +481,48 @@ createApp({
     },
     
     resetProgress() {
-      if (confirm('Are you sure you want to reset all progress? This cannot be undone.')) {
-        this.userProfile.completedWorkouts = [];
-        this.userProfile.cardioLog = [];
-        this.userProfile.totalTimeTrainedMinutes = 0;
-        this.saveUserProfile();
-        alert('Progress has been reset.');
+      if (confirm('Are you sure you want to reset current program progress? This cannot be undone.')) {
+        this.currentProfile.completedWorkouts = [];
+        this.currentProfile.cardioLog = [];
+        this.currentProfile.totalTimeTrainedMinutes = 0;
+        this.saveData();
+        alert('Progress has been reset for ' + (this.activeProgramType === 'bodyweight' ? 'Bodyweight' : 'Dumbbell') + ' program.');
       }
     },
     
-    switchProgram() {
-      if (confirm('Switching programs will reset your progress. Continue?')) {
-        this.userProfile.programType = null;
-        this.userProfile.completedWorkouts = [];
-        this.userProfile.cardioLog = [];
-        this.userProfile.totalTimeTrainedMinutes = 0;
-        this.userProfile.startDate = null;
-        this.saveUserProfile();
+    resetAllProgress() {
+      if (confirm('Are you sure you want to reset ALL progress for BOTH programs? This cannot be undone.')) {
+        this.bodyweightProfile = {
+          startDate: null,
+          currentWeek: 1,
+          currentDay: 0,
+          completedWorkouts: [],
+          cardioLog: [],
+          totalTimeTrainedMinutes: 0
+        };
+        this.dumbbellProfile = {
+          startDate: null,
+          currentWeek: 1,
+          currentDay: 0,
+          completedWorkouts: [],
+          cardioLog: [],
+          totalTimeTrainedMinutes: 0
+        };
+        this.activeProgramType = null;
+        this.saveData();
         this.currentView = 'onboarding';
+        alert('All progress has been reset.');
       }
     },
     
     // Utility
     getDateForDayOfWeek(dayOfWeek) {
-      const today = new Date();
+      const today = this.getLocalDate();
       const currentDay = today.getDay();
       const diff = dayOfWeek - currentDay;
       const targetDate = new Date(today);
       targetDate.setDate(today.getDate() + diff);
-      return targetDate.toISOString().split('T')[0];
+      return targetDate.toLocaleDateString('en-CA');
     },
     
     formatTime(seconds) {
@@ -401,19 +538,26 @@ createApp({
       return `${hours}h ${mins}m`;
     },
     
-    // Data persistence
-    saveUserProfile() {
-      localStorage.setItem('jcUserProfile', JSON.stringify(this.userProfile));
+    // Data persistence - UPDATED to save both profiles
+    saveData() {
+      const data = {
+        activeProgramType: this.activeProgramType,
+        bodyweightProfile: this.bodyweightProfile,
+        dumbbellProfile: this.dumbbellProfile
+      };
+      localStorage.setItem('jcDualProfile', JSON.stringify(data));
     },
     
-    loadUserProfile() {
-      const saved = localStorage.getItem('jcUserProfile');
+    loadData() {
+      const saved = localStorage.getItem('jcDualProfile');
       if (saved) {
         try {
           const loaded = JSON.parse(saved);
-          this.userProfile = { ...this.userProfile, ...loaded };
+          this.activeProgramType = loaded.activeProgramType;
+          this.bodyweightProfile = { ...this.bodyweightProfile, ...loaded.bodyweightProfile };
+          this.dumbbellProfile = { ...this.dumbbellProfile, ...loaded.dumbbellProfile };
           
-          if (this.userProfile.programType && this.userProfile.startDate) {
+          if (this.activeProgramType && this.currentProfile.startDate) {
             this.currentView = 'dashboard';
           }
         } catch (e) {
@@ -425,10 +569,10 @@ createApp({
   
   mounted() {
     // Load saved data
-    this.loadUserProfile();
+    this.loadData();
     
     // Load dark mode preference
-    const savedDarkMode = localStorage.getItem('darkMode');
+    const savedDarkMode = localStorage.setItem('darkMode');
     if (savedDarkMode === 'true') {
       this.darkMode = true;
       document.documentElement.classList.add('dark');
@@ -514,15 +658,59 @@ createApp({
       
       <!-- Dashboard Screen -->
       <div v-if="currentView === 'dashboard'" class="p-4 space-y-4">
-        <!-- Header -->
+        <!-- Header with Program Switcher -->
         <div class="flex items-center justify-between mb-6">
           <div>
-            <h1 class="text-2xl font-black text-gray-900 dark:text-white">Dashboard</h1>
-            <p class="text-sm text-gray-600 dark:text-gray-400">Week {{ userProfile.currentWeek }} of 12</p>
+            <div class="flex items-center gap-2">
+              <h1 class="text-2xl font-black text-gray-900 dark:text-white">Dashboard</h1>
+              <button @click="showProgramSwitcher = true" class="text-primary-600 dark:text-primary-400">
+                <i class="fas fa-sync-alt"></i>
+              </button>
+            </div>
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+              {{ activeProgramType === 'bodyweight' ? 'Bodyweight' : 'Dumbbell' }} • Week {{ currentProfile.currentWeek }} of 12
+            </p>
           </div>
           <button @click="navigateTo('settings')" class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700 touch-feedback">
             <i class="fas fa-cog text-gray-700 dark:text-gray-300"></i>
           </button>
+        </div>
+        
+        <!-- Program Switcher Modal -->
+        <div v-if="showProgramSwitcher" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-6" @click="showProgramSwitcher = false">
+          <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-md w-full" @click.stop>
+            <h2 class="text-xl font-bold text-gray-900 dark:text-white mb-4">Switch Program</h2>
+            
+            <!-- Current Program -->
+            <div class="bg-primary-50 dark:bg-primary-900 rounded-xl p-4 mb-4">
+              <p class="text-sm text-primary-600 dark:text-primary-400 mb-1">Currently Active</p>
+              <h3 class="font-bold text-gray-900 dark:text-white">{{ activeProgramType === 'bodyweight' ? 'Bodyweight' : 'Dumbbell' }} Program</h3>
+              <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                {{ currentProfile.completedWorkouts.length }} of {{ programData.totalWorkouts }} workouts completed ({{ progressPercentage }}%)
+              </p>
+            </div>
+            
+            <!-- Other Program -->
+            <div v-if="inactiveProgramProgress" class="bg-gray-50 dark:bg-gray-700 rounded-xl p-4 mb-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600"
+                 @click="switchToProgram(inactiveProgramProgress.type)">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Switch to</p>
+              <h3 class="font-bold text-gray-900 dark:text-white">{{ inactiveProgramProgress.name }}</h3>
+              <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                {{ inactiveProgramProgress.completed }} of {{ inactiveProgramProgress.total }} workouts completed ({{ inactiveProgramProgress.percentage }}%)
+              </p>
+            </div>
+            
+            <div v-else class="bg-gray-50 dark:bg-gray-700 rounded-xl p-4 mb-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600"
+                 @click="switchToProgram(activeProgramType === 'bodyweight' ? 'dumbbell' : 'bodyweight')">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Start</p>
+              <h3 class="font-bold text-gray-900 dark:text-white">{{ activeProgramType === 'bodyweight' ? 'Dumbbell' : 'Bodyweight' }} Program</h3>
+              <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">Not started yet</p>
+            </div>
+            
+            <button @click="showProgramSwitcher = false" class="w-full bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white font-semibold py-3 rounded-xl touch-feedback">
+              Cancel
+            </button>
+          </div>
         </div>
         
         <!-- Progress Overview Card -->
@@ -532,7 +720,7 @@ createApp({
           <div class="grid grid-cols-2 gap-4 mb-4">
             <div>
               <p class="text-primary-100 text-sm">Completed</p>
-              <p class="text-3xl font-black">{{ userProfile.completedWorkouts.length }}</p>
+              <p class="text-3xl font-black">{{ currentProfile.completedWorkouts.length }}</p>
               <p class="text-primary-100 text-xs">of {{ programData.totalWorkouts }} workouts</p>
             </div>
             <div>
@@ -562,7 +750,7 @@ createApp({
             <div class="flex items-center justify-center w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 mx-auto mb-2">
               <i class="fas fa-clock text-blue-600 dark:text-blue-400"></i>
             </div>
-            <p class="text-2xl font-bold text-center text-gray-900 dark:text-white">{{ formatDuration(userProfile.totalTimeTrainedMinutes) }}</p>
+            <p class="text-2xl font-bold text-center text-gray-900 dark:text-white">{{ formatDuration(currentProfile.totalTimeTrainedMinutes) }}</p>
             <p class="text-xs text-center text-gray-600 dark:text-gray-400">Trained</p>
           </div>
           
@@ -570,7 +758,7 @@ createApp({
             <div class="flex items-center justify-center w-10 h-10 rounded-full bg-green-100 dark:bg-green-900 mx-auto mb-2">
               <i class="fas fa-chart-line text-green-600 dark:text-green-400"></i>
             </div>
-            <p class="text-2xl font-bold text-center text-gray-900 dark:text-white">{{ ((userProfile.currentWeek - 1) % 4) + 1 === 4 ? 'Deload' : 'Build' }}</p>
+            <p class="text-2xl font-bold text-center text-gray-900 dark:text-white">{{ ((currentProfile.currentWeek - 1) % 4) + 1 === 4 ? 'Deload' : 'Build' }}</p>
             <p class="text-xs text-center text-gray-600 dark:text-gray-400">Week Type</p>
           </div>
         </div>
@@ -689,6 +877,16 @@ createApp({
             </p>
           </div>
           
+          <!-- NEW: Previous Weight Display (Dumbbell only) -->
+          <div v-if="activeProgramType === 'dumbbell' && previousWeight && previousWeight.length > 0" class="mb-6 bg-gray-800 rounded-xl p-4">
+            <p class="text-sm text-gray-400 mb-2">Last workout:</p>
+            <div class="flex flex-wrap gap-2">
+              <span v-for="(set, idx) in previousWeight" :key="idx" class="text-primary-400 font-semibold">
+                {{ set.weight || '?' }} lbs × {{ set.reps }}
+              </span>
+            </div>
+          </div>
+          
           <!-- Rest Timer -->
           <div v-if="isResting" class="mb-8">
             <div class="relative w-48 h-48 mx-auto">
@@ -716,6 +914,17 @@ createApp({
           
           <!-- Set Completion (when not resting) -->
           <div v-else class="space-y-4">
+            <!-- NEW: Weight Input for Dumbbell -->
+            <div v-if="activeProgramType === 'dumbbell'" class="bg-gray-800 rounded-2xl p-6">
+              <label class="block text-sm text-gray-400 mb-2">Weight (lbs)</label>
+              <input type="number" 
+                     v-model="currentSetWeight" 
+                     placeholder="Enter weight"
+                     class="w-full bg-gray-700 text-white text-4xl font-bold text-center py-4 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-600"
+                     min="0"
+                     step="5">
+            </div>
+            
             <div class="bg-gray-800 rounded-2xl p-6">
               <label class="block text-sm text-gray-400 mb-2">Reps Completed</label>
               <input type="number" 
@@ -799,7 +1008,7 @@ createApp({
       <!-- Schedule Screen -->
       <div v-if="currentView === 'schedule'" class="p-4">
         <div class="flex items-center justify-between mb-6">
-          <h1 class="text-2xl font-black text-gray-900 dark:text-white">Week {{ userProfile.currentWeek }}</h1>
+          <h1 class="text-2xl font-black text-gray-900 dark:text-white">Week {{ currentProfile.currentWeek }}</h1>
           <button @click="navigateTo('dashboard')" class="text-primary-600 dark:text-primary-400 font-semibold">
             <i class="fas fa-times mr-1"></i>Close
           </button>
@@ -851,9 +1060,9 @@ createApp({
         <div class="space-y-4">
           <!-- Program Info -->
           <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
-            <h3 class="font-bold text-gray-900 dark:text-white mb-2">Current Program</h3>
+            <h3 class="font-bold text-gray-900 dark:text-white mb-2">Active Program</h3>
             <p class="text-gray-600 dark:text-gray-400">{{ programData.name }}</p>
-            <button @click="switchProgram" class="mt-3 text-primary-600 dark:text-primary-400 font-semibold text-sm">
+            <button @click="showProgramSwitcher = true" class="mt-3 text-primary-600 dark:text-primary-400 font-semibold text-sm">
               <i class="fas fa-sync-alt mr-1"></i>Switch Program
             </button>
           </div>
@@ -872,26 +1081,35 @@ createApp({
             </button>
           </div>
           
-          <!-- Reset Progress -->
+          <!-- Reset Current Program Progress -->
           <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
-            <h3 class="font-bold text-gray-900 dark:text-white mb-2">Reset Progress</h3>
-            <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Clear all workout data and start fresh</p>
-            <button @click="resetProgress" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg touch-feedback">
+            <h3 class="font-bold text-gray-900 dark:text-white mb-2">Reset Current Program</h3>
+            <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Clear progress for {{ activeProgramType === 'bodyweight' ? 'Bodyweight' : 'Dumbbell' }} program only</p>
+            <button @click="resetProgress" class="bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2 px-4 rounded-lg touch-feedback">
+              <i class="fas fa-undo mr-2"></i>Reset This Program
+            </button>
+          </div>
+          
+          <!-- Reset ALL Progress -->
+          <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
+            <h3 class="font-bold text-gray-900 dark:text-white mb-2">Reset Everything</h3>
+            <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Clear ALL data for BOTH programs</p>
+            <button @click="resetAllProgress" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg touch-feedback">
               <i class="fas fa-exclamation-triangle mr-2"></i>Reset All Data
             </button>
           </div>
           
           <!-- Stats -->
           <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
-            <h3 class="font-bold text-gray-900 dark:text-white mb-3">Statistics</h3>
+            <h3 class="font-bold text-gray-900 dark:text-white mb-3">Current Program Statistics</h3>
             <div class="space-y-2 text-sm">
               <div class="flex justify-between">
                 <span class="text-gray-600 dark:text-gray-400">Total Workouts:</span>
-                <span class="font-semibold text-gray-900 dark:text-white">{{ userProfile.completedWorkouts.length }}</span>
+                <span class="font-semibold text-gray-900 dark:text-white">{{ currentProfile.completedWorkouts.length }}</span>
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-600 dark:text-gray-400">Total Time Trained:</span>
-                <span class="font-semibold text-gray-900 dark:text-white">{{ formatDuration(userProfile.totalTimeTrainedMinutes) }}</span>
+                <span class="font-semibold text-gray-900 dark:text-white">{{ formatDuration(currentProfile.totalTimeTrainedMinutes) }}</span>
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-600 dark:text-gray-400">Current Streak:</span>
@@ -899,7 +1117,22 @@ createApp({
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-600 dark:text-gray-400">Start Date:</span>
-                <span class="font-semibold text-gray-900 dark:text-white">{{ userProfile.startDate }}</span>
+                <span class="font-semibold text-gray-900 dark:text-white">{{ currentProfile.startDate }}</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Other Program Stats (if exists) -->
+          <div v-if="inactiveProgramProgress" class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
+            <h3 class="font-bold text-gray-900 dark:text-white mb-3">{{ inactiveProgramProgress.name }} Statistics</h3>
+            <div class="space-y-2 text-sm">
+              <div class="flex justify-between">
+                <span class="text-gray-600 dark:text-gray-400">Total Workouts:</span>
+                <span class="font-semibold text-gray-900 dark:text-white">{{ inactiveProgramProgress.completed }} of {{ inactiveProgramProgress.total }}</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-600 dark:text-gray-400">Progress:</span>
+                <span class="font-semibold text-gray-900 dark:text-white">{{ inactiveProgramProgress.percentage }}%</span>
               </div>
             </div>
           </div>
@@ -942,4 +1175,3 @@ createApp({
     </div>
   `
 }).mount('#app');
-
